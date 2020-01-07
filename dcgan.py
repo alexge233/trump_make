@@ -32,41 +32,41 @@ torch.manual_seed(manualSeed)
 dataroot = "data/"
 
 # Number of workers for dataloader
-workers = 6
-
+workers = 12
 # Batch size during training
-batch_size = 128
-
+batch_size = 64
 # Spatial size of training images. All images will be resized to this
 #   size using a transformer.
 image_size = 64
-
 # Number of channels in the training images. For color images this is 3
 nc = 3
-
 # Size of z latent vector (i.e. size of generator input)
 nz = 100
-
 # Size of feature maps in generator
 ngf = 64
-
 # Size of feature maps in discriminator
 ndf = 64
-
 # Number of training epochs
 num_epochs = 500
-
-# Learning rate for optimizers
+# Learning rate for optimizers (HUGE IMPACT)
 lr = 0.0002
-
 # Beta1 hyperparam for Adam optimizers
-beta1 = 0.5
-
+beta1 = 0.2
 # Number of GPUs available. Use 0 for CPU mode.
 ngpu = 1
 
-# We can use an image folder dataset the way we have it setup.
-# Create the dataset
+"""
+    Note: papers say train with batch 32 for 5000 epochs!!!
+          also ensure that noise is propagated in both G and D!
+          Last, try SGD instead of ADAM
+"""
+
+
+#
+#normalize = transforms.Normalize(mean=[0.6308107582835936, 0.4385014286334169, 0.38007994109731374],
+#                                  std=[0.18569097698754572, 0.15495167947398258, 0.14816380123900705])
+
+#
 dataset = dset.ImageFolder(root=dataroot,
                            transform=transforms.Compose([
                                transforms.Resize(image_size),
@@ -101,22 +101,31 @@ class Generator(nn.Module):
         super(Generator, self).__init__()
         self.ngpu = ngpu
         self.main = nn.Sequential(
+
+            #
+            #   LeakyReLU with 0.01 not 0.2
+            #
+
             # input is Z, going into a convolution
-            nn.ConvTranspose2d( nz, ngf * 8, 4, 1, 0, bias=False),
-            nn.BatchNorm2d(ngf * 8),
-            nn.ReLU(True),
+            nn.ConvTranspose2d(nz, ngf * 8, 4, 1, 0, bias=False),
+            nn.BatchNorm2d(ngf * 8, momentum=0.8),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+
             # state size. (ngf*8) x 4 x 4
             nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 4),
-            nn.ReLU(True),
+            nn.BatchNorm2d(ngf * 4, momentum=0.8),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+
             # state size. (ngf*4) x 8 x 8
             nn.ConvTranspose2d( ngf * 4, ngf * 2, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 2),
-            nn.ReLU(True),
+            nn.BatchNorm2d(ngf * 2, momentum=0.8),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+
             # state size. (ngf*2) x 16 x 16
             nn.ConvTranspose2d( ngf * 2, ngf, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf),
-            nn.ReLU(True),
+            nn.BatchNorm2d(ngf, momentum=0.8),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+
             # state size. (ngf) x 32 x 32
             nn.ConvTranspose2d( ngf, nc, 4, 2, 1, bias=False),
             nn.Tanh()
@@ -144,21 +153,26 @@ class Discriminator(nn.Module):
         super(Discriminator, self).__init__()
         self.ngpu = ngpu
         self.main = nn.Sequential(
+
             # input is (nc) x 64 x 64
             nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
             nn.LeakyReLU(0.2, inplace=True),
+
             # state size. (ndf) x 32 x 32
             nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ndf * 2),
             nn.LeakyReLU(0.2, inplace=True),
+
             # state size. (ndf*2) x 16 x 16
             nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ndf * 4),
             nn.LeakyReLU(0.2, inplace=True),
+
             # state size. (ndf*4) x 8 x 8
             nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ndf * 8),
             nn.LeakyReLU(0.2, inplace=True),
+
             # state size. (ndf*8) x 4 x 4
             nn.Conv2d(ndf * 8, 1, 4, 1, 0, bias=False),
             nn.Sigmoid()
@@ -191,8 +205,13 @@ real_label = 1
 fake_label = 0
 
 # Setup Adam optimizers for both G and D
-optimizerD = optim.Adam(netD.parameters(), lr=lr, betas=(beta1, 0.999))
-optimizerG = optim.Adam(netG.parameters(), lr=lr, betas=(beta1, 0.999))
+optimizerD = optim.Adam(netD.parameters(), lr=lr, betas=(beta1, 0.999), weight_decay=0.01)
+optimizerG = optim.Adam(netG.parameters(), lr=lr, betas=(beta1, 0.999), weight_decay=0.01)
+
+# Try with SGD instead
+#optimizerD = optim.SGD(netD.parameters(), lr=lr, momentum=0.9)
+#optimizerG = optim.SGD(netG.parameters(), lr=lr, momentum=0.9)
+
 
 # Training Loop
 
@@ -200,11 +219,13 @@ optimizerG = optim.Adam(netG.parameters(), lr=lr, betas=(beta1, 0.999))
 img_list = []
 G_losses = []
 D_losses = []
+D_xes    = []
 iters = 0
 
 print("Starting Training Loop...")
 # For each epoch
 for epoch in range(num_epochs):
+
     # For each batch in the dataloader
     for i, data in enumerate(dataloader, 0):
 
@@ -221,6 +242,7 @@ for epoch in range(num_epochs):
         output = netD(real_cpu).view(-1)
         # Calculate loss on all-real batch
         errD_real = criterion(output, label)
+
         # Calculate gradients for D in backward pass
         errD_real.backward()
         D_x = output.mean().item()
@@ -228,18 +250,24 @@ for epoch in range(num_epochs):
         ## Train with all-fake batch
         # Generate batch of latent vectors
         noise = torch.randn(b_size, nz, 1, 1, device=device)
+
         # Generate fake image batch with G
         fake = netG(noise)
         label.fill_(fake_label)
+
         # Classify all fake batch with D
         output = netD(fake.detach()).view(-1)
+
         # Calculate D's loss on the all-fake batch
         errD_fake = criterion(output, label)
+
         # Calculate the gradients for this batch
         errD_fake.backward()
         D_G_z1 = output.mean().item()
+
         # Add the gradients from the all-real and all-fake batches
         errD = errD_real + errD_fake
+
         # Update D
         optimizerD.step()
 
@@ -248,13 +276,17 @@ for epoch in range(num_epochs):
         ###########################
         netG.zero_grad()
         label.fill_(real_label)  # fake labels are real for generator cost
+
         # Since we just updated D, perform another forward pass of all-fake batch through D
         output = netD(fake).view(-1)
+
         # Calculate G's loss based on this output
         errG = criterion(output, label)
+
         # Calculate gradients for G
         errG.backward()
         D_G_z2 = output.mean().item()
+
         # Update G
         optimizerG.step()
 
@@ -267,6 +299,7 @@ for epoch in range(num_epochs):
         # Save Losses for plotting later
         G_losses.append(errG.item())
         D_losses.append(errD.item())
+        D_xes.append(D_x)
 
         # Check how the generator is doing by saving G's output on fixed_noise
         if (iters % 500 == 0) or ((epoch == num_epochs-1) and (i == len(dataloader)-1)):
@@ -282,6 +315,7 @@ plt.figure(figsize=(10,5))
 plt.title("Generator and Discriminator Loss During Training")
 plt.plot(G_losses,label="G")
 plt.plot(D_losses,label="D")
+plt.plot(D_x,label="D(x)")
 plt.xlabel("iterations")
 plt.ylabel("Loss")
 plt.legend()
