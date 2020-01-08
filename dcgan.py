@@ -75,8 +75,10 @@ dataset = dset.ImageFolder(root=dataroot,
                                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                            ]))
 # Create the dataloader
-dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
-                                         shuffle=True, num_workers=workers)
+dataloader = torch.utils.data.DataLoader(dataset,
+                                         batch_size=batch_size,
+                                         shuffle=True,
+                                         num_workers=workers)
 
 # Decide which device we want to run on
 device = torch.device("cuda:0" if (torch.cuda.is_available() and ngpu > 0) else "cpu")
@@ -235,13 +237,33 @@ for epoch in range(num_epochs):
         ## Train with all-real batch
         netD.zero_grad()
         # Format batch
-        real_cpu = data[0].to(device)
-        b_size = real_cpu.size(0)
-        label = torch.full((b_size,), real_label, device=device)
+        #   
+        # I THINK there is a bug here, data[0] essentially takes ONLY ONE
+        # SAMPLE from the list of data!!!
+        #
+        print(len(data))
+        print(type(data))
+
+        real_cpu    = data[0].to(device)
+        print(type(real_cpu))
+        print("input size", real_cpu.size())
+        b_size      = real_cpu.size(0)
+        print("batch", b_size)
+        label       = torch.full((b_size,), real_label, device=device)
+        print("label size", label.size())
+        print("label data", label)
+
         # Forward pass real batch through D
-        output = netD(real_cpu).view(-1)
+        output      = netD(real_cpu) #.view(-1)
+        print("output size", output.size())
+        print("output data", output)
+
+        output      = output.view(-1)
+        print("output size", output.size())
+        print("output data", output)
+
         # Calculate loss on all-real batch
-        errD_real = criterion(output, label)
+        errD_real   = criterion(output, label)
 
         # Calculate gradients for D in backward pass
         errD_real.backward()
