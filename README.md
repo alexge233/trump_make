@@ -2,6 +2,16 @@
 
 ![Trump Fakes](results/make_trump_best.png)
 
+An explanation of how DCGAN works, can be found here:
+
+https://medium.com/@keisukeumezawa/dcgan-generate-the-images-with-deep-convolutinal-gan-55edf947c34b
+
+PyTorch has also released a turorial:
+https://pytorch.org/tutorials/beginner/dcgan_faces_tutorial.html
+
+Similarly, code that runs the same way can be found here:
+https://debuggercafe.com/implementing-deep-convolutional-gan-with-pytorch/
+
 An experiment in DCGAN using Donald Trump's face as the dataset benchmark.
 Feel free to change the parameters, add or remove Trump faces, etc.
 This is more of a game to understand how GAN (and specificially Convolutional GAN) work,
