@@ -1,6 +1,8 @@
-#
-# Taken from: https://pytorch.org/tutorials/beginner/dcgan_faces_tutorial.html
-#
+"""
+Taken from: https://pytorch.org/tutorials/beginner/dcgan_faces_tutorial.html
+
+Adjusted with custom networks to increase complexity.
+"""
 
 from __future__ import print_function
 #%matplotlib inline
@@ -61,7 +63,6 @@ ngpu = 1
           Last, try SGD instead of ADAM
 """
 
-
 #
 #normalize = transforms.Normalize(mean=[0.6308107582835936, 0.4385014286334169, 0.38007994109731374],
 #                                  std=[0.18569097698754572, 0.15495167947398258, 0.14816380123900705])
@@ -99,14 +100,51 @@ def weights_init(m):
         nn.init.constant_(m.bias.data, 0)
 
 class Generator(nn.Module):
+    """Generator of Fake Images.
+    It uses Pytorch's ConvTranspose2d, which is a *deconvolution*
+    also known as a upsampler. 
+    The original work defines `nz` as a parameter, that is the latent space size.
+    Using `nz` has a great impact; it defines **how much** information is encoded
+    in the latent space, before the Deconvolution takes place.
+    The second parameter is `ngf` which defines how many features are used to 
+    encode that information.
+
+    PyTorch documentation states that `nz` is used as `input_channels` and that the second
+    argument (`ngf`) specifies the output channels produced by the deconvolution:
+        https://pytorch.org/docs/stable/generated/torch.nn.ConvTranspose2d.html
+
+    And documentation for `BatchNorm2d` is at:
+        https://pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html
+
+    I think one thing I've missed is that the Generator outputs 64x64 whereas the Discriminator
+    takes in 32x32
+    """
     def __init__(self, ngpu):
         super(Generator, self).__init__()
         self.ngpu = ngpu
         self.main = nn.Sequential(
 
-            #
-            #   LeakyReLU with 0.01 not 0.2
-            #
+            """
+            Note, arguments for `ConvTranspose2d` are:
+            Args:
+                input_channels
+                output_channels
+                kernel_size
+                stride
+                padding
+                bias
+                output_padding
+                bias
+                dilation
+
+            Note, arguments for `BatchNorm2d` are:
+            Args:
+                num_features:
+                eps:
+                momentum:
+                affine:
+                track_running_stats:
+            """
 
             # input is Z, going into a convolution
             nn.ConvTranspose2d(nz, ngf * 8, 4, 1, 0, bias=False),
@@ -236,11 +274,7 @@ for epoch in range(num_epochs):
         ###########################
         ## Train with all-real batch
         netD.zero_grad()
-        # Format batch
-        #   
-        # I THINK there is a bug here, data[0] essentially takes ONLY ONE
-        # SAMPLE from the list of data!!!
-        #
+
         print(len(data))
         print(type(data))
 
@@ -272,6 +306,17 @@ for epoch in range(num_epochs):
         ## Train with all-fake batch
         # Generate batch of latent vectors
         noise = torch.randn(b_size, nz, 1, 1, device=device)
+
+        """
+        There is an important question here, why add noise to the batch?
+        How does that aid the Generator?
+        Obviously what we see is that we pass a random tensor to the Generator
+        and then expect it to produce a *real* image.
+
+        I think I need to explore and understand this better, in order to
+        be able to optimise the architecture and achieve better performance
+        using the Generator/Discriminator approach.
+        """
 
         # Generate fake image batch with G
         fake = netG(noise)
