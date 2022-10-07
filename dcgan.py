@@ -1,6 +1,5 @@
 """
 Taken from: https://pytorch.org/tutorials/beginner/dcgan_faces_tutorial.html
-
 Adjusted with custom networks to increase complexity.
 """
 
