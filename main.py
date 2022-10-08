@@ -12,11 +12,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
+import torchvision.datasets as dset
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from torchvision.datasets import MNIST
 from pytorch_lightning.core import LightningModule
 from pytorch_lightning.trainer import Trainer
+from pytorch_lightning.loggers import TensorBoardLogger
 
 
 class Generator(nn.Module):
@@ -125,7 +127,7 @@ class DCGAN(LightningModule):
         self.batch_size = batch_size
 
         # networks
-        img_shape = (1, 32, 32)
+        img_shape = (3, 64, 64)
         self.generator = Generator(latent_dim=self.latent_dim, img_shape=img_shape)
         self.discriminator = Discriminator(img_shape=img_shape)
         self.validation_z = torch.randn(8, self.latent_dim)
@@ -225,8 +227,13 @@ class DCGAN(LightningModule):
             transforms.Normalize([0.5], [0.5]),
         ])
 
-        # TODO: pass as argument the dataloader (only TRUMP FOR NOW)
-        dataset = MNIST(os.getcwd(), train=True, download=True, transform=transform)
+        dataset = dset.ImageFolder(root="data/trump",
+                           transform=transforms.Compose([
+                               transforms.Resize(64),
+                               transforms.CenterCrop(64),
+                               transforms.ToTensor(),
+                               transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                           ]))
         return DataLoader(dataset, batch_size=self.batch_size)
 
 
@@ -246,13 +253,14 @@ def main(args: Namespace) -> None:
     # 1 INIT LIGHTNING MODEL
     # ------------------------
     model = DCGAN(**vars(args))
+    logger = TensorBoardLogger("default", name="DCGAN")
 
     # ------------------------
     # 2 INIT TRAINER
     # ------------------------
     # If use distubuted training  PyTorch recommends to use DistributedDataParallel.
     # See: https://pytorch.org/docs/stable/nn.html#torch.nn.DataParallel
-    trainer = Trainer(gpus=args.gpus)
+    trainer = Trainer(accelerator="gpu", devices=1, logger=logger)
 
     # ------------------------
     # 3 START TRAINING
@@ -263,7 +271,7 @@ def main(args: Namespace) -> None:
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument("--gpus", type=int, default=0, help="number of GPUs")
-    parser.add_argument("--batch_size", type=int, default=64, help="size of the batches")
+    parser.add_argument("--batch_size", type=int, default=256, help="size of the batches")
     parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
     parser.add_argument("--b1", type=float, default=0.5,
                         help="adam: decay of first order momentum of gradient")
