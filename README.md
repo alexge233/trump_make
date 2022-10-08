@@ -26,6 +26,7 @@ can use the `data`/trump_faces` as is.
 
 The `dcgan.py` has params and hyper-params, and you can play freely with it, getting different
 results. This is a game between two networks:
+
 - The Generator (aka `G`) will try to generate better and better fakes
 - The Discriminator (aka `D`) will try to detect fakes as best as possible
 - When they reach equilibrium, e.g., when `G` generates good fakes which `D` can't tell apart from
@@ -44,3 +45,17 @@ At some point I plan on adding `tensorboard` support instead of `matplotlib` and
 slightly different achitectures for the `G` network.
 
 If you fancy, send me a *pr* and if everything is OK I'll accept it.
+
+# UPDATE for Hacktoberfest 2022
+
+First of all, read `CONTRIBUTING.md`.
+Then note the following;
+
+1. I've made a move from pytorch-only code to pytorch-lightining since it abstracts and moves a lot of stuff into classes.
+2. This may have broken functionality. If it did, sorry!
+3. I'm using CUDA 11.6 so torch and torchvision need to match it. If your installation is older, change your virtual environment, but don't commit the changes back
+4. Use PEP8 or keep code tidy please, and document it.
+5. Use python3.9 and pip to setup a virtual environment and run the code on CUDA/GPU.
+6. Use tensorboard to visualise progress, metrics and produced images!
+
+Have Phunz!
