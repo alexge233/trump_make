@@ -72,13 +72,48 @@ dataset = dset.ImageFolder(root=dataroot,
                                transforms.Resize(image_size),
                                transforms.CenterCrop(image_size),
                                transforms.ToTensor(),
-                               transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                            ]))
 # Create the dataloader
 dataloader = torch.utils.data.DataLoader(dataset,
                                          batch_size=batch_size,
                                          shuffle=True,
                                          num_workers=workers)
+
+def compute_mean_std(dataloader):
+    mean = torch.zeros(3)
+    std = torch.zeros(3)
+    count=0
+    for images, _ in dataloader:
+        count+=1
+        batch_samples = images.size(0)  # Get batch size
+        for i in range(3):  # Loop over RGB channels
+            mean[i] += images[:, i, :, :].mean()
+            std[i] += images[:, i, :, :].std()
+
+    mean /= count
+    std /= count
+
+    return mean, std
+
+# Compute the mean and std
+mean, std = compute_mean_std(dataloader)
+
+transform = transforms.Compose([
+    transforms.Resize(image_size),
+    transforms.CenterCrop(image_size),
+    transforms.ToTensor(),
+    transforms.Normalize(mean.tolist(), std.tolist())  # Use computed mean and std
+])
+
+# Load the dataset with normalization
+dataset = dset.ImageFolder(root=dataroot, 
+                           transform=transform)
+
+dataloader = torch.utils.data.DataLoader(dataset, 
+                                         batch_size=batch_size, 
+                                         shuffle=True, 
+                                         num_workers=workers)
+
 
 # Decide which device we want to run on
 device = torch.device("cuda:0" if (torch.cuda.is_available() and ngpu > 0) else "cpu")
@@ -121,9 +156,7 @@ class Generator(nn.Module):
     def __init__(self, ngpu):
         super(Generator, self).__init__()
         self.ngpu = ngpu
-        self.main = nn.Sequential(
-
-            """
+        """
             Note, arguments for `ConvTranspose2d` are:
             Args:
                 input_channels
@@ -144,6 +177,8 @@ class Generator(nn.Module):
                 affine:
                 track_running_stats:
             """
+        
+        self.main = nn.Sequential(
 
             # input is Z, going into a convolution
             nn.ConvTranspose2d(nz, ngf * 8, 4, 1, 0, bias=False),
