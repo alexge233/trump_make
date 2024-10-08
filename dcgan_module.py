@@ -25,6 +25,8 @@ parser.add_argument('--rootdir', default='data/trump/', type=str, help='director
 parser.add_argument('-e', '--epochs', default=500, type=int, required=False, help='Epochs to train for')
 args = parser.parse_args()
 
+# TODO: could do with a compute mean here
+
 if __name__ == "__main__":
     dataroot = args.rootdir
 

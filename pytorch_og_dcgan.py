@@ -1,32 +1,84 @@
 """
-To run this template just do:
-python dcgan.py
-After a few epochs, launch TensorBoard to see the images being generated at every batch:
-tensorboard --logdir default
-
-TODO: REWORK THIS TO WORK!!!
+Taken from: https://pytorch.org/tutorials/beginner/dcgan_faces_tutorial.html
+Adjusted with custom networks to increase complexity.
 """
+
+from __future__ import print_function
+#%matplotlib inline
+import argparse
 import os
-from argparse import ArgumentParser, Namespace
-from collections import OrderedDict
-import numpy as np
+import random
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torchvision
+import torch.nn.parallel
+import torch.backends.cudnn as cudnn
+import torch.optim as optim
+import torch.utils.data
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
-from torchvision.datasets import MNIST
-from pytorch_lightning.core import LightningModule
-from pytorch_lightning.trainer import Trainer
-from pytorch_lightning.loggers import TensorBoardLogger
+import torchvision.utils as vutils
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from IPython.display import HTML
+
+# Set random seed for reproducibility
+manualSeed = 999
+#manualSeed = random.randint(1, 10000) # use if you want new results
+print("Random Seed: ", manualSeed)
+random.seed(manualSeed)
+torch.manual_seed(manualSeed)
+
+# Root directory for dataset
+dataroot = "data/"
+
+# Number of workers for dataloader
+workers = 12
+# Batch size during training
+batch_size = 64
+# Spatial size of training images. All images will be resized to this
+#   size using a transformer.
+image_size = 64
+# Number of channels in the training images. For color images this is 3
+nc = 3
+# Size of z latent vector (i.e. size of generator input)
+nz = 100
+# Size of feature maps in generator
+ngf = 64
+# Size of feature maps in discriminator
+ndf = 64
+# Number of training epochs
+num_epochs = 500
+# Learning rate for optimizers (HUGE IMPACT)
+lr = 0.0002
+# Beta1 hyperparam for Adam optimizers
+beta1 = 0.2
+# Number of GPUs available. Use 0 for CPU mode.
+ngpu = 1
+
+"""
+    Note: papers say train with batch 32 for 5000 epochs!!!
+          also ensure that noise is propagated in both G and D!
+          Last, try SGD instead of ADAM
+"""
 
 #
-# TODO: convert into a jupyter notebook
-#       add the fixes from `dcgan` and 
-#       cleanup printing on screen
+#normalize = transforms.Normalize(mean=[0.6308107582835936, 0.4385014286334169, 0.38007994109731374],
+#                                  std=[0.18569097698754572, 0.15495167947398258, 0.14816380123900705])
+
 #
+dataset = dset.ImageFolder(root=dataroot,
+                           transform=transforms.Compose([
+                               transforms.Resize(image_size),
+                               transforms.CenterCrop(image_size),
+                               transforms.ToTensor(),
+                           ]))
+# Create the dataloader
+dataloader = torch.utils.data.DataLoader(dataset,
+                                         batch_size=batch_size,
+                                         shuffle=True,
+                                         num_workers=workers)
+
 def compute_mean_std(dataloader):
     mean = torch.zeros(3)
     std = torch.zeros(3)
@@ -40,385 +92,357 @@ def compute_mean_std(dataloader):
 
     mean /= count
     std /= count
+
     return mean, std
 
+# Compute the mean and std
+mean, std = compute_mean_std(dataloader)
+
+transform = transforms.Compose([
+    transforms.Resize(image_size),
+    transforms.CenterCrop(image_size),
+    transforms.ToTensor(),
+    transforms.Normalize(mean.tolist(), std.tolist())  # Use computed mean and std
+])
+
+# Load the dataset with normalization
+dataset = dset.ImageFolder(root=dataroot, 
+                           transform=transform)
+
+dataloader = torch.utils.data.DataLoader(dataset, 
+                                         batch_size=batch_size, 
+                                         shuffle=True, 
+                                         num_workers=workers)
+
+
+# Decide which device we want to run on
+device = torch.device("cuda:0" if (torch.cuda.is_available() and ngpu > 0) else "cpu")
+
+# Plot some training images
+real_batch = next(iter(dataloader))
+plt.figure(figsize=(8,8))
+plt.axis("off")
+plt.title("Training Images")
+plt.imshow(np.transpose(vutils.make_grid(real_batch[0].to(device)[:64], padding=2, normalize=True).cpu(),(1,2,0)))
+
+def weights_init(m):
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find('BatchNorm') != -1:
+        nn.init.normal_(m.weight.data, 1.0, 0.02)
+        nn.init.constant_(m.bias.data, 0)
 
 class Generator(nn.Module):
+    """Generator of Fake Images.
+    It uses Pytorch's ConvTranspose2d, which is a *deconvolution*
+    also known as a upsampler. 
+    The original work defines `nz` as a parameter, that is the latent space size.
+    Using `nz` has a great impact; it defines **how much** information is encoded
+    in the latent space, before the Deconvolution takes place.
+    The second parameter is `ngf` which defines how many features are used to 
+    encode that information.
+
+    PyTorch documentation states that `nz` is used as `input_channels` and that the second
+    argument (`ngf`) specifies the output channels produced by the deconvolution:
+        https://pytorch.org/docs/stable/generated/torch.nn.ConvTranspose2d.html
+
+    And documentation for `BatchNorm2d` is at:
+        https://pytorch.org/docs/stable/generated/torch.nn.BatchNorm2d.html
+
+    I think one thing I've missed is that the Generator outputs 64x64 whereas the Discriminator
+    takes in 32x32
     """
-    Generator Module for DC GAN.
-    This is a model that takes as input a Tensor of random data.
-    For brevity, that tensor should be the same dimensions as the image, but that's
-    not really a requirement in any way.
-
-    The vanilla DC-GAN design starts by convolving the input to a high channel dimensionality,
-    and then keeps convolving to lower channels. It uses a stride of 2, which allows the network
-    to essentially learn its own downsampling approach.
-
-    The PyTorch implementation uses `ConvTranspose2d` and the papers also suggest its use.
-    The PyTorch-lightning uses `Upsample` which is a non-learnable technique, and probably not the one to use here.
-
-    This is what the design should look like:
-        https://pytorch.org/tutorials/_images/dcgan_generator.png
-
-    PyTorch tutorial can be found here:
-        https://pytorch.org/tutorials/beginner/dcgan_faces_tutorial.html
-
-    PyTorch-Lightning (is significantly different):
-        https://github.com/nocotan/pytorch-lightning-gans/blob/master/models/dcgan.py
-
-    The vanilla was a different beast; see here:
-            https://machinelearningmastery.com/how-to-train-stable-generative-adversarial-networks/
-
-    I have adapted it to create 3-channel 128x128 pixel images.
-    """
-    def __init__(self, nz = 100, ngf = 128, nc = 3):
+    def __init__(self, ngpu):
+        super(Generator, self).__init__()
+        self.ngpu = ngpu
         """
-        Args:
-            nz:  number of latent space input (what specifies the random input tensor)
-                 there's no clear reason as to why a larger noise input will help
-                 Ultimately, we can plug a Transformer if this is to be used for text prompts.
-            ngf: numer of generator features (64) used to produce (64 x 64)
-            nc:  number of channels in the output (BGR)
+            Note, arguments for `ConvTranspose2d` are:
+            Args:
+                input_channels
+                output_channels
+                kernel_size
+                stride
+                padding
+                bias
+                output_padding
+                bias
+                dilation
 
-        """
-        super().__init__()
+            Note, arguments for `BatchNorm2d` are:
+            Args:
+                num_features:
+                eps:
+                momentum:
+                affine:
+                track_running_stats:
+            """
+        
         self.main = nn.Sequential(
+
             # input is Z, going into a convolution
-            nn.ConvTranspose2d(in_channels  = nz,
-                               out_channels = ngf * 8,
-                               kernel_size  = 4,
-                               stride       = 1,
-                               padding      = 0,
-                               bias         = False),
+            nn.ConvTranspose2d(nz, ngf * 8, 4, 1, 0, bias=False),
             nn.BatchNorm2d(ngf * 8, momentum=0.8),
-            nn.PReLU(),
-            # state size. (ngf * 8 = 512) x 4 x 4
-            nn.ConvTranspose2d(in_channels  = ngf * 8,
-                               out_channels = ngf * 4,
-                               kernel_size  = 4,
-                               stride       = 2,
-                               padding      = 1,
-                               bias         = False),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+
+            # state size. (ngf*8) x 4 x 4
+            nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ngf * 4, momentum=0.8),
-            nn.PReLU(),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+
             # state size. (ngf*4) x 8 x 8
-            nn.ConvTranspose2d(in_channels  = ngf * 4,
-                               out_channels = ngf * 2,
-                               kernel_size  = 4,
-                               stride       = 2,
-                               padding      = 1,
-                               bias         = False),
+            nn.ConvTranspose2d( ngf * 4, ngf * 2, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ngf * 2, momentum=0.8),
-            nn.PReLU(),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+
             # state size. (ngf*2) x 16 x 16
-            nn.ConvTranspose2d(in_channels  = ngf * 2,
-                               out_channels = ngf,
-                               kernel_size  = 4,
-                               stride       = 2,
-                               padding      = 1,
-                               bias         = False),
+            nn.ConvTranspose2d( ngf * 2, ngf, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ngf, momentum=0.8),
-            nn.PReLU(),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+
             # state size. (ngf) x 32 x 32
-            nn.ConvTranspose2d(in_channels = ngf,
-                               out_channels = nc,
-                               kernel_size  = 4,
-                               stride       = 2,
-                               padding      = 1,
-                               bias         = False),
+            nn.ConvTranspose2d( ngf, nc, 4, 2, 1, bias=False),
             nn.Tanh()
-            # state size. (nc) x 64 x 64 (-> 3, 64, 64)
+            # state size. (nc) x 64 x 64
         )
-        """
-        Output will be:
-            Batch, Channels, Height, Width
-        """
 
+    def forward(self, input):
+        return self.main(input)
 
-    def forward(self, z):
-        return self.main(z)
+netG = Generator(ngpu).to(device)
 
+# Handle multi-gpu if desired
+if (device.type == 'cuda') and (ngpu > 1):
+    netG = nn.DataParallel(netG, list(range(ngpu)))
+
+# Apply the weights_init function to randomly initialize all weights
+#  to mean=0, stdev=0.2.
+netG.apply(weights_init)
+
+# Print the model
+print(netG)
 
 class Discriminator(nn.Module):
-    """
-    Discriminator tells us if the Generator output is real or fake.
-    The Discriminator takes as input the Generator's output (a 3 x 64 x64 Tensor) representing
-    a fake image.
-
-    Architecture is similar to a CNN (actually, it is a CNN!):
-      -> Conv2D, BatchNorm2D, LeakyReLU (repeats 5 times).
-      -> Note; DO NOT use BatchNorm2D on the input layer
-      -> Uses Sigmoid instead of Tanh, to Score the input plausibility (0 fake, 1 real)
-
-    """
-    def __init__(self, nc = 3, ndf = 64):
+    def __init__(self, ngpu):
         super(Discriminator, self).__init__()
-
-        """
-        I believe that the Vanilla DC-GAN used BatchNorm but no dropout.
-        This one here adds BatchNorm programmatically, but hass explicit dropout as well.
-
-        The Discriminator returns a `validity` which basically defines if the Generator
-        Output is `valid` or `fake`. The higher output implies that the Discriminator
-        thinks all Generator outputs are valid.
-        >>> TODO: FIX Architecture
-        """
+        self.ngpu = ngpu
         self.main = nn.Sequential(
+
             # input is (nc) x 64 x 64
-            nn.Conv2d(in_channels  = nc,
-                      out_channels = ndf,
-                      kernel_size  = 4,
-                      stride       = 2,
-                      padding      = 1,
-                      bias=False),
+            nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(0.25),
+
             # state size. (ndf) x 32 x 32
-            nn.Conv2d(in_channels = ndf,
-                      out_channels = ndf * 2,
-                      kernel_size  = 4,
-                      stride       = 2,
-                      padding      = 1,
-                      bias         = False),
+            nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ndf * 2),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(0.25),
+
             # state size. (ndf*2) x 16 x 16
-            nn.Conv2d(in_channels  = ndf * 2,
-                      out_channels = ndf * 4,
-                      kernel_size  = 4,
-                      stride       = 2,
-                      padding      = 1,
-                      bias         = False),
+            nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ndf * 4),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(0.25),
+
             # state size. (ndf*4) x 8 x 8
-            nn.Conv2d(in_channels  = ndf * 4,
-                      out_channels = ndf * 8,
-                      kernel_size  = 4,
-                      stride       = 2,
-                      padding      = 1,
-                      bias         = False),
+            nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ndf * 8),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(0.25),
-            # state size. (ndf * 8) x 4 x 4
-            nn.Conv2d(in_channels  = ndf * 8,
-                      out_channels = 1,
-                      kernel_size  = 3, #4
-                      stride       = 1,
-                      padding      = 0,
-                      bias         = False),
-            nn.Flatten(),
-            nn.Linear(4, 1),
+
+            # state size. (ndf*8) x 4 x 4
+            nn.Conv2d(ndf * 8, 1, 4, 1, 0, bias=False),
             nn.Sigmoid()
         )
 
+    def forward(self, input):
+        return self.main(input)
 
-    def forward(self, img):
+netD = Discriminator(ngpu).to(device)
+
+# Handle multi-gpu if desired
+if (device.type == 'cuda') and (ngpu > 1):
+    netD = nn.DataParallel(netD, list(range(ngpu)))
+
+# Apply the weights_init function to randomly initialize all weights
+#  to mean=0, stdev=0.2.
+netD.apply(weights_init)
+
+# Print the model
+print(netD)
+
+criterion = nn.BCELoss()
+
+# Create batch of latent vectors that we will use to visualize
+#  the progression of the generator
+fixed_noise = torch.randn(64, nz, 1, 1, device=device)
+
+# Establish convention for real and fake labels during training
+real_label = 1
+fake_label = 0
+
+# Setup Adam optimizers for both G and D
+optimizerD = optim.Adam(netD.parameters(), lr=lr, betas=(beta1, 0.999), weight_decay=0.01)
+optimizerG = optim.Adam(netG.parameters(), lr=lr, betas=(beta1, 0.999), weight_decay=0.01)
+
+# Try with SGD instead
+#optimizerD = optim.SGD(netD.parameters(), lr=lr, momentum=0.9)
+#optimizerG = optim.SGD(netG.parameters(), lr=lr, momentum=0.9)
+
+
+# Training Loop
+
+# Lists to keep track of progress
+img_list = []
+G_losses = []
+D_losses = []
+D_xes    = []
+iters = 0
+
+print("Starting Training Loop...")
+# For each epoch
+for epoch in range(num_epochs):
+
+    # For each batch in the dataloader
+    for i, data in enumerate(dataloader, 0):
+
+        ############################
+        # (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
+        ###########################
+        ## Train with all-real batch
+        netD.zero_grad()
+
+        print(len(data))
+        print(type(data))
+
+        real_cpu    = data[0].to(device)
+        print(type(real_cpu))
+        print("input size", real_cpu.size())
+        b_size      = real_cpu.size(0)
+        print("batch", b_size)
+        label       = torch.full((b_size,), real_label, device=device)
+        print("label size", label.size())
+        print("label data", label)
+
+        # Forward pass real batch through D
+        output      = netD(real_cpu) #.view(-1)
+        print("output size", output.size())
+        print("output data", output)
+
+        output      = output.view(-1)
+        print("output size", output.size())
+        print("output data", output)
+
+        # Calculate loss on all-real batch
+        errD_real   = criterion(output, label)
+
+        # Calculate gradients for D in backward pass
+        errD_real.backward()
+        D_x = output.mean().item()
+
+        ## Train with all-fake batch
+        # Generate batch of latent vectors
+        noise = torch.randn(b_size, nz, 1, 1, device=device)
+
         """
-        Returns:
-            Tensor (Batch, 1) where each entry in batch has a Binary value
+        There is an important question here, why add noise to the batch?
+        How does that aid the Generator?
+        Obviously what we see is that we pass a random tensor to the Generator
+        and then expect it to produce a *real* image.
+
+        I think I need to explore and understand this better, in order to
+        be able to optimise the architecture and achieve better performance
+        using the Generator/Discriminator approach.
         """
-        return self.main(img)
 
+        # Generate fake image batch with G
+        fake = netG(noise)
+        label.fill_(fake_label)
 
-class DCGAN(LightningModule):
-    """
-    Put Generator and Discriminator in a single class,
-    then wrap the training logic and loss methods here.
-    Courtesy of Pytorch-Lightining:
-    https://github.com/nocotan/pytorch-lightning-gans/blob/master/models/dcgan.py
-    """
-    def __init__(self,
-                 lr: float,
-                 batch_size: int,
-                 ):
-        super().__init__()
-        self.save_hyperparameters()
-        self.lr = lr
-        self.batch_size = batch_size
-        img_shape = (3, 64, 64)
-        self.generator = Generator()
-        self.discriminator = Discriminator()
+        # Classify all fake batch with D
+        output = netD(fake.detach()).view(-1)
 
+        # Calculate D's loss on the all-fake batch
+        errD_fake = criterion(output, label)
 
-    def forward(self, z):
-        return self.generator(z)
+        # Calculate the gradients for this batch
+        errD_fake.backward()
+        D_G_z1 = output.mean().item()
 
+        # Add the gradients from the all-real and all-fake batches
+        errD = errD_real + errD_fake
 
-    def training_step(self, batch, batch_idx, optimizer_idx):
-        imgs, _ = batch
+        # Update D
+        optimizerD.step()
 
-        """
-        >>> PyTorch lightning has a different approach which I'm not sure is correct.
-            It averages real loss and fake loss.
-            Original DC-GAN simply sums the losses.
+        ############################
+        # (2) Update G network: maximize log(D(G(z)))
+        ###########################
+        netG.zero_grad()
+        label.fill_(real_label)  # fake labels are real for generator cost
 
-        Check here for the main loop to see why the metrics are off:
-        https://pytorch.org/tutorials/beginner/dcgan_faces_tutorial.html
+        # Since we just updated D, perform another forward pass of all-fake batch through D
+        output = netD(fake).view(-1)
 
-        >>> Both Generated Images and Real images are of shape:
-            [64, 3, 64, 64] meaning; Batch, NC, H, W
+        # Calculate G's loss based on this output
+        errG = criterion(output, label)
 
-        >>> However, `valid` is [64, 1] and `fake` is [64, 1]
-        """
-        criterion = nn.BCELoss()
+        # Calculate gradients for G
+        errG.backward()
+        D_G_z2 = output.mean().item()
 
-        z = torch.randn(imgs.shape[0], 100, 1, 1)
-        z = z.type_as(imgs)
-        #
-        # generate fake images from noise as input
-        #
-        output   = self.generator(z)
-        self.fakes = output
+        # Update G
+        optimizerG.step()
 
-        #
-        # ground truth result (ie: all fake) or all valid
-        # put on GPU because we created this tensor inside training_loop
-        #
-        valid = torch.full((imgs.size(0),), 1, dtype=torch.float, device=self.device)
-        #
-        # how well can it label as fake?
-        #
-        fake = torch.full((imgs.shape[0],), 0, dtype=torch.float, device=self.device)
+        # Output training stats
+        if i % 50 == 0:
+            print('[%d/%d][%d/%d]\tLoss_D: %.4f\tLoss_G: %.4f\tD(x): %.4f\tD(G(z)): %.4f / %.4f'
+                  % (epoch, num_epochs, i, len(dataloader),
+                     errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
 
-        # 
-        # Update Generator
-        #
-        if optimizer_idx == 0:
+        # Save Losses for plotting later
+        G_losses.append(errG.item())
+        D_losses.append(errD.item())
+        D_xes.append(D_x)
 
-            #
-            # Generator Loss is BCE over Generated Fake Images.
-            # However, we calculate BCE over the Discriminator's Output over the Fake Images!
-            # But we use a `valid` label for it
-            #
-            fake_out = self.discriminator(output).view(-1)
-            g_loss = criterion(fake_out, valid)
+        # Check how the generator is doing by saving G's output on fixed_noise
+        if (iters % 500 == 0) or ((epoch == num_epochs-1) and (i == len(dataloader)-1)):
+            with torch.no_grad():
+                fake = netG(fixed_noise).detach().cpu()
+            img_list.append(vutils.make_grid(fake, padding=2, normalize=True))
 
-            tqdm_dict = {'g_loss': g_loss}
-            output = OrderedDict({
-                'loss': g_loss,
-                'D_G_z2' : fake_out.mean().item(),
-                'progress_bar': tqdm_dict,
-                'log': tqdm_dict
-            })
-            self.log("generator", g_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-            return output
+        iters += 1
+#
+#
+#
+plt.figure(figsize=(10,5))
+plt.title("Generator and Discriminator Loss During Training")
+plt.plot(G_losses,label="G")
+plt.plot(D_losses,label="D")
+plt.plot(D_x,label="D(x)")
+plt.xlabel("iterations")
+plt.ylabel("Loss")
+plt.legend()
+plt.show()
 
-        # 
-        # Update Discriminator
-        #
-        if optimizer_idx == 1:
-            # discriminator run on fake images and then real images
-            fake_out = self.discriminator(output).view(-1)
-            real_out = self.discriminator(imgs).view(-1)
+fig = plt.figure(figsize=(8,8))
+plt.axis("off")
+ims = [[plt.imshow(np.transpose(i,(1,2,0)), animated=True)] for i in img_list]
+ani = animation.ArtistAnimation(fig, ims, interval=1000, repeat_delay=1000, blit=True)
 
-            #
-            # Real Loss for Discriminator is Discriminator over real images
-            #
-            real_loss = criterion(real_out, valid)
+HTML(ani.to_jshtml())
 
-            #
-            # Fake Loss for Discriminator is Discriminator over fake images
-            #
-            fake_loss = criterion(fake_out, fake)
+# Grab a batch of real images from the dataloader
+real_batch = next(iter(dataloader))
 
-            #
-            # discriminator loss is the SUM (not the average)
-            #
-            d_loss = (real_loss + fake_loss)
+# Plot the real images
+plt.figure(figsize=(15,15))
+plt.subplot(1,2,1)
+plt.axis("off")
+plt.title("Real Images")
+plt.imshow(np.transpose(vutils.make_grid(real_batch[0].to(device)[:64], padding=5, normalize=True).cpu(),(1,2,0)))
 
-            tqdm_dict = {'d_loss': d_loss}
-            output = OrderedDict({
-                'loss': d_loss,
-                'D_G_z1' : fake_out.mean().item(),
-                'D_x' : real_out.mean().item(),
-                'progress_bar': tqdm_dict,
-                'log': tqdm_dict
-            })
-            self.log("discriminator", d_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-            return output
+# Plot the fake images from the last epoch
+plt.subplot(1,2,2)
+plt.axis("off")
+plt.title("Fake Images")
+plt.imshow(np.transpose(img_list[-1],(1,2,0)))
+plt.show()
 
-
-    def configure_optimizers(self):
-        """
-        Setup Learning rates, etc
-        """
-        lr = self.lr
-
-        opt_g = torch.optim.Adam(self.generator.parameters(), lr=lr)
-        opt_d = torch.optim.Adam(self.discriminator.parameters(), lr=lr)
-        return [opt_g, opt_d], []
-
-
-    def train_dataloader(self):
-        """
-        Setup Dataloader (pytorch-lightining feature).
-        >>> TODO: hack into this and either use Trump Dataset or Alien Circles Dataset!
-            This can be done by adding an argumnet to the class init
-        """
-        dataset = dset.ImageFolder(root="data/trump",
-                           transform=transforms.Compose([
-                               transforms.Resize(64),
-                               transforms.CenterCrop(64),
-                               transforms.ToTensor(),
-                               transforms.Normalize(
-                                   (0.6337, 0.4399, 0.3807),
-                                   (0.2056, 0.1687, 0.1635)
-                               ),
-                           ]))
-        return DataLoader(dataset,
-                          batch_size = self.batch_size,
-                          num_workers = 16,
-                          shuffle = True,
-                          persistent_workers = True)
-
-
-    def train_epoch_end(self):
-        """
-        On Epoch End, sample images and push them to Tensorboard in a grid for visualisation
-        """
-        # log sampled images (only six from the looks of it)
-        grid = torchvision.utils.make_grid(self.fakes, nrow=32, normalize=False)
-        #
-        # default dataformats is `(N,3,H,W)` which in this case is
-        # Batch (or grid samples), C, H (64) Width (the Sample image grid concatenated)
-        #
-        self.logger.experiment.add_image(tag = 'generated_images',
-                                         img_tensor = grid,
-                                         global_step = 0)
-
-
-def main(args: Namespace) -> None:
-    # ------------------------
-    # 1 INIT LIGHTNING MODEL
-    # ------------------------
-    #model = DCGAN(**vars(args))
-    logger = TensorBoardLogger("default", name="DCGAN")
-    model = DCGAN(lr=0.0001, batch_size=32)
-
-    # ------------------------
-    # 2 INIT TRAINER
-    # ------------------------
-    # If use distubuted training  PyTorch recommends to use DistributedDataParallel.
-    # See: https://pytorch.org/docs/stable/nn.html#torch.nn.DataParallel
-    trainer = Trainer(accelerator="gpu", devices=1, logger=logger, max_epochs=1000, precision=32)
-
-    # ------------------------
-    # 3 START TRAINING
-    # ------------------------
-    trainer.fit(model)
-
-
-if __name__ == '__main__':
-    parser = ArgumentParser()
-    parser.add_argument("--gpus", type=int, default=0, help="number of GPUs")
-    parser.add_argument("--batch_size", type=int, default=32, help="size of the batches")
-    parser.add_argument("--lr", type=float, default=0.0001, help="adam: learning rate")
-    parser.add_argument("--latent_dim", type=int, default=64,
-                        help="dimensionality of the latent space")
-
-    hparams = parser.parse_args()
-    main(hparams)
