@@ -129,3 +129,6 @@ dmypy.json
 .pyre/
 *.swp
 *.swo
+
+.models/
+lightning_logs/

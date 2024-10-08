@@ -59,3 +59,26 @@ Then note the following;
 6. Use tensorboard to visualise progress, metrics and produced images!
 
 Have Phunz!
+
+# UPDATE of October 2024
+
+I've tried very hard to make the DCGAN work. It used to generate mediocre outputs, and then somehow it broke.
+Back when it was released, there were afew people dicussing it.
+Below are useful links that may help you if you decide to play with this architecture.
+Needless to say it has since been surpased.
+
+The original post:
+https://pytorch.org/tutorials/beginner/dcgan_faces_tutorial.html?highlight=dcgan
+
+A very good discussion on DCGANS:
+https://github.com/pytorch/examples/issues/70
+
+And last but not least, some very good hints and tips:
+https://github.com/soumith/ganhacks
+
+__Ultimately__ I just decided to use a ready made model from lighting bolts:
+https://pytorch-lightning-bolts.readthedocs.io/en/stable/models/gans.html#dcgan
+
+Yes, I am aware this defeats the purpose, but I got defeated by DCGANs so I gave up.
+
+
